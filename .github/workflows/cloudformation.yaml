@@ -26,6 +26,6 @@ jobs:
       - name: Deploy CloudFormation stack
         run: |
           aws cloudformation deploy \
-            --template-file s3.yml \
-            --stack-name cloudformation-stack \
+            --template-file s3.yaml \
+            --stack-name cloudformation-s3-stack \
             --no-fail-on-empty-changeset
