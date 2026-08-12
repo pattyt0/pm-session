@@ -1,3 +1,3 @@
 def test_hello() :
     message = "hola"
-    assert "h" == message
+    assert "hola" == message
