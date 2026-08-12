@@ -3,7 +3,7 @@ name: Create a S3 bucket
 on:
   push:
     branches:
-      - ["main"]
+      - main
 
 jobs:
   deploy:
