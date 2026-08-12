@@ -1,0 +1,8 @@
+AWSTemplateFormatVersion: '2026-08-12'
+Description: S3 bucket
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: pm-demo-checket-12345
