@@ -29,3 +29,4 @@ jobs:
           --template-file s3.yml \
           --stack-name cloudformation-s3-stack \
           --no-fail-on-empty-changeset
+
