@@ -1,9 +1,9 @@
 import boto3
 
-sts = boto3.client('sts')
+sts = boto3.client("sts")
 
 response = sts.get_caller_identity()
 
-print("Account:", response['Account'])
-print("UserId:", response['UserId'])
-print("ARN:", response['Arn'])
+print("Account:", response["Account"])
+print("UserId:", response["UserId"])
+print("Arn:", response["Arn"])
