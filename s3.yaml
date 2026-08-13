@@ -5,4 +5,4 @@ Resources:
   MyBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: pm-demo-bucket-12345
+      BucketName: pm-demo-bucket-v1
