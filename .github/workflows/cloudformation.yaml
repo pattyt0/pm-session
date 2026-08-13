@@ -9,24 +9,24 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-  permissions:
-    id-token: write # to allow the workflow to create a new token for the boto3 tests
-    contents: read # to allow the workflow to read the repository contents
+    permissions:
+      id-token: write
+      contents: read
 
-  steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: arn:aws:iam::${{vars.AWS_ROLE_ARN}}:role/${{vars.AWS_ROLE_NAME}}
-        aws-region: us-east-1
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{vars.AWS_ROLE_ARN}}:role/${{vars.AWS_ROLE_NAME}}
+          aws-region: us-east-1
 
-    - name: Deploy CloudFormation stack
-      run: |
-        aws cloudformation deploy \
-          --template-file s3.yml \
-          --stack-name cloudformation-s3-stack \
-          --no-fail-on-empty-changeset
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file s3.yml \
+            --stack-name cloudformation-s3-stack \
+            --no-fail-on-empty-changeset
 
