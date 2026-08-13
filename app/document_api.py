@@ -67,7 +67,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if route == 'collection':
             response = table.scan()
-            self.send_json(200, {'items': response.get('Items', [])})
+            items = response.get('Items', [])
+            for item in items:
+                item.pop('contentBase64', None)
+            self.send_json(200, {'items': items})
             return
         if route == 'item':
             response = table.get_item(Key={'folio': folio})
@@ -75,6 +78,9 @@ class Handler(BaseHTTPRequestHandler):
             if not item:
                 self.send_json(404, {'message': 'Documento no encontrado'})
                 return
+            if item.get('s3Key'):
+                obj = s3.get_object(Bucket=BUCKET_NAME, Key=item['s3Key'])
+                item['contentBase64'] = base64.b64encode(obj['Body'].read()).decode('utf-8')
             self.send_json(200, item)
             return
         self.send_json(404, {'message': 'Ruta no encontrada'})

@@ -188,7 +188,11 @@ Resources:
           #!/bin/bash
           set -eux
           dnf update -y
-          dnf install -y python3 python3-boto3 curl
+          dnf install -y python3 python3-pip python3-boto3 curl
+
+          if ! /usr/bin/python3 -c "import boto3" >/dev/null 2>&1; then
+            /usr/bin/python3 -m pip install --upgrade boto3
+          fi
 
           curl --fail --location --silent --show-error '${AppCodeUrl}' --output /opt/document_api.py
           chmod 0644 /opt/document_api.py

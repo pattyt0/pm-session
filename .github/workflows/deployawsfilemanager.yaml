@@ -1,9 +1,7 @@
 name: Deploy pm file manager to AWS CloudFormation
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch
 
 jobs:
   deploy-cloudformation:
