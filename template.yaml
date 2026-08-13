@@ -1,8 +1,99 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Plantilla de AWS CloudFormation para el Sistema de Gestión de Documentos.  
+  Infraestructura economica para un sistema de gestion de documentos usando EC2,
+  Python, DynamoDB y S3. Pensado para pruebas con Postman.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t4g.nano
+    Description: Tipo de instancia EC2 economica. t4g.nano usa ARM64.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: Amazon Linux 2023 ARM64 mas reciente.
+  AppCodeUrl:
+    Type: String
+    Default: https://raw.githubusercontent.com/pattyt0/pm-session/main/app/document_api.py
+    Description: URL raw de GitHub desde donde la EC2 descarga el codigo Python de la API REST.
 
 Resources:
+  # =========================================================================
+  # 1. NETWORKING MINIMO PARA EC2 PUBLICA
+  # =========================================================================
+  DocVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: DocMgmtVPC
+
+  DocPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DocVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: DocPublicSubnet
+
+  DocInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: DocIGW
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref DocVPC
+      InternetGatewayId: !Ref DocInternetGateway
+
+  DocPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DocVPC
+      Tags:
+        - Key: Name
+          Value: DocPublicRouteTable
+
+  DocPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref DocPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref DocInternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DocPublicSubnet
+      RouteTableId: !Ref DocPublicRouteTable
+
+  DocApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permite acceso HTTP publico para probar la API desde Postman
+      VpcId: !Ref DocVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: DocApiSecurityGroup
+
   # =========================================================================
   # 1. BASE DE DATOS (DynamoDB) - crea una tabla en dynamoDB `DocumentosMetadata`
   # solucion barata/para trafico bajo porque se paga por request en lugar de solicitar una capacidad
@@ -20,11 +111,6 @@ Resources:
         - AttributeName: folio
           KeyType: HASH
 
-  # =========================================================================
-  # 2. ALMACENAMIENTO (Buckets S3) - crea un bucket para almacenar los archivos
-  # permite CORS de cualquier origen, permitiendo al frontend acceder, subir/descargar archivos
-  # =========================================================================
-  # Bucket para archivos binarios (Documentos)
   DocStorageBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -40,206 +126,106 @@ Resources:
             ExpirationInDays: 7
 
   # =========================================================================
-  # 3. ROLES E IAM (Principio de Mínimo Privilegio para Lambda)
-  # crea IAM role (DocLambdaExecutionRole) porque cada f(x) lambda requiere un execution role
-  # el rol `AssumeRole` da acceso a lambda a CloudWatch Logs, DynamoDB table, S3 document bucket objects
-  # Dynamo DB permissions permiten CRUD en `DocumentosMetadata`
-  # S3 permissions permiten file upload, download, delete
+  # 3. IAM PARA LA INSTANCIA EC2
   # =========================================================================
-  LambdaExecutionRole:
+  DocEc2Role:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: DocLambdaExecutionRole
+      RoleName: DocEc2DocumentApiRole
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: [lambda.amazonaws.com]
-            Action: ['sts:AssumeRole']
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
-        - PolicyName: DocLambdaBasicPolicy
+        - PolicyName: DocEc2DocumentApiPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # CloudWatch Logs
               - Effect: Allow
                 Action:
-                  - 'logs:CreateLogGroup'
-                  - 'logs:CreateLogStream'
-                  - 'logs:PutLogEvents'
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DocApiHandler:*'
-              # DynamoDB
-              - Effect: Allow
-                Action:
-                  - 'dynamodb:PutItem'
-                  - 'dynamodb:GetItem'
-                  - 'dynamodb:UpdateItem'
-                  - 'dynamodb:DeleteItem'
-                  - 'dynamodb:Scan'
-                  - 'dynamodb:Query'
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
                 Resource: !GetAtt DocumentosMetadataTable.Arn
-              # S3 Access
               - Effect: Allow
                 Action:
-                  - 's3:PutObject'
-                  - 's3:GetObject'
-                  - 's3:DeleteObject'
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
                 Resource: !Sub 'arn:aws:s3:::${DocStorageBucket}/*'
 
-  # =========================================================================
-  # 4. COMPUTO (AWS Lambda Backend) - crea un node.js lambda
-  # si el mensage `API activa y funcional` se muestra es porque el API GW puede llamar a lambda pero no implemento el API CRUD
-  # =========================================================================
-  DocApiLambda:
-    Type: AWS::Lambda::Function
+  DocEc2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
     Properties:
-      FunctionName: DocApiHandler
-      Runtime: nodejs18.x
-      Role: !GetAtt LambdaExecutionRole.Arn
-      Handler: index.handler
-      Environment:
-        Variables:
-          TABLE_NAME: !Ref DocumentosMetadataTable
-          BUCKET_NAME: !Ref DocStorageBucket
-      Code:
-        ZipFile: |
-          exports.handler = async (event) => {
-            return {
-              statusCode: 200,
-              headers: { 
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*"
-              },
-              body: JSON.stringify({ message: "API activa y funcional" })
-            };
-          };
-  DocApiLambdaLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: /aws/lambda/DocApiHandler
-      RetentionInDays: 1
+      Roles:
+        - !Ref DocEc2Role
 
   # =========================================================================
-  # 5. API GATEWAY (Público / Integración Directa)
-  # crea un REST API regional, exponiendo asi los endpoints
+  # 4. EC2 CON API PYTHON
   # =========================================================================
-  DocApiGateway:
-    Type: AWS::ApiGateway::RestApi
+  DocApiInstance:
+    Type: AWS::EC2::Instance
     Properties:
-      Name: Document Management API
-      EndpointConfiguration:
-        Types: [REGIONAL]
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref DocEc2InstanceProfile
+      SubnetId: !Ref DocPublicSubnet
+      SecurityGroupIds:
+        - !Ref DocApiSecurityGroup
+      Tags:
+        - Key: Name
+          Value: DocApiPythonInstance
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          dnf update -y
+          dnf install -y python3 python3-boto3 curl
 
-  # Permiso para que API Gateway invoque a lambda,  de otra manera lambda bloquea invocaciones al servicio
-  LambdaApiGatewayPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref DocApiLambda
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DocApiGateway}/*/*/*'
+          curl --fail --location --silent --show-error '${AppCodeUrl}' --output /opt/document_api.py
+          chmod 0644 /opt/document_api.py
 
-  # crea Recurso /documentos
-  DocsResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      ParentId: !GetAtt DocApiGateway.RootResourceId
-      PathPart: documentos
-      RestApiId: !Ref DocApiGateway
+          cat > /etc/systemd/system/document-api.service <<'SERVICE'
+          [Unit]
+          Description=Document Management Python API
+          After=network-online.target
+          Wants=network-online.target
 
-  # crea Recurso /documentos/{folio}
-  FolioResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      ParentId: !Ref DocsResource
-      PathPart: '{folio}'
-      RestApiId: !Ref DocApiGateway
+          [Service]
+          Environment=TABLE_NAME=${DocumentosMetadataTable}
+          Environment=BUCKET_NAME=${DocStorageBucket}
+          Environment=AWS_REGION=${AWS::Region}
+          ExecStart=/usr/bin/python3 /opt/document_api.py
+          Restart=always
+          RestartSec=5
 
-  # Métodos REST CRUD en /documentos, sin authN
-  # AWS_PROXY para q API GW q direcciona los http req a lambda, y lambda controla el res
-  DocsGetMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      AuthorizationType: NONE
-      HttpMethod: GET
-      ResourceId: !Ref DocsResource
-      RestApiId: !Ref DocApiGateway
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
 
-  DocsPostMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      AuthorizationType: NONE
-      HttpMethod: POST
-      ResourceId: !Ref DocsResource
-      RestApiId: !Ref DocApiGateway
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
+          systemctl daemon-reload
+          systemctl enable document-api
+          systemctl start document-api
 
-  # Métodos CRUD en /documentos/{folio}
-  FolioGetMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      AuthorizationType: NONE
-      HttpMethod: GET
-      ResourceId: !Ref FolioResource
-      RestApiId: !Ref DocApiGateway
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
-
-  FolioPutMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      AuthorizationType: NONE
-      HttpMethod: PUT
-      ResourceId: !Ref FolioResource
-      RestApiId: !Ref DocApiGateway
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
-
-  FolioDeleteMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      AuthorizationType: NONE
-      HttpMethod: DELETE
-      ResourceId: !Ref FolioResource
-      RestApiId: !Ref DocApiGateway
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
-
-  # Despliegue de API Gateway
-  ApiDeployment:
-    Type: AWS::ApiGateway::Deployment
-    DependsOn:
-      - DocsGetMethod
-      - DocsPostMethod
-      - FolioGetMethod
-      - FolioPutMethod
-      - FolioDeleteMethod
-    Properties:
-      RestApiId: !Ref DocApiGateway
-      StageName: prod
-
-# =========================================================================
-# 6. OUTPUTS (Resultados del Despliegue)
-# =========================================================================
 Outputs:
   ApiEndpoint:
-    Description: URL Base de la API para consumir desde Postman o Frontend
-    Value: !Sub 'https://${DocApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/'
+    Description: URL base de la API Python en EC2 para probar con Postman
+    Value: !Sub 'http://${DocApiInstance.PublicDnsName}'
+
+  HealthEndpoint:
+    Description: Endpoint de health check de la API
+    Value: !Sub 'http://${DocApiInstance.PublicDnsName}/health'
 
   StorageBucketName:
-    Description: Nombre del Bucket S3 de almacenamiento de documentos
+    Description: Nombre del bucket S3 de almacenamiento de documentos
     Value: !Ref DocStorageBucket
+
+  InstanceId:
+    Description: ID de la instancia EC2 que ejecuta la API Python
+    Value: !Ref DocApiInstance
