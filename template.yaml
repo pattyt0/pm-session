@@ -1,0 +1,272 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Plantilla de AWS CloudFormation para el Sistema de Gestión de Documentos.  
+
+Resources:
+  # =========================================================================
+  # 1. BASE DE DATOS (DynamoDB) - crea una tabla en dynamoDB `DocumentosMetadata`
+  # solucion barata/para trafico bajo porque se paga por request en lugar de solicitar una capacidad
+  # PK - folio
+  # =========================================================================
+  DocumentosMetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: DocumentosMetadata
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: folio
+          AttributeType: S
+      KeySchema:
+        - AttributeName: folio
+          KeyType: HASH
+
+  # =========================================================================
+  # 2. ALMACENAMIENTO (Buckets S3) - crea un bucket para almacenar los archivos
+  # permite CORS de cualquier origen, permitiendo al frontend acceder, subir/descargar archivos
+  # =========================================================================
+  # Bucket para archivos binarios (Documentos)
+  DocStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, DELETE]
+            AllowedOrigins: ['*']
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanupOldFiles
+            Status: Enabled
+            ExpirationInDays: 7
+
+  # Bucket para alojamiento Web del Frontend como pagina statica
+  # el hosting de esta pagina estatica requiere aceso public
+  DocFrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+  # permite s3:GetObject para el arvhico front end  para que pueda leerse html, JS, CSS
+  DocFrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DocFrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${DocFrontendBucket}/*'
+
+  # =========================================================================
+  # 3. ROLES E IAM (Principio de Mínimo Privilegio para Lambda)
+  # crea IAM role (DocLambdaExecutionRole) porque cada f(x) lambda requiere un execution role
+  # el rol `AssumeRole` da acceso a lambda a CloudWatch Logs, DynamoDB table, S3 document bucket objects
+  # Dynamo DB permissions permiten CRUD en `DocumentosMetadata`
+  # S3 permissions permiten file upload, download, delete
+  # =========================================================================
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DocLambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Policies:
+        - PolicyName: DocLambdaBasicPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # CloudWatch Logs
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/DocApiHandler:*'
+              # DynamoDB
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:Query'
+                Resource: !GetAtt DocumentosMetadataTable.Arn
+              # S3 Access
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:DeleteObject'
+                Resource: !Sub 'arn:aws:s3:::${DocStorageBucket}/*'
+
+  # =========================================================================
+  # 4. COMPUTO (AWS Lambda Backend) - crea un node.js lambda
+  # si el mensage `API activa y funcional` se muestra es porque el API GW puede llamar a lambda pero no implemento el API CRUD
+  # =========================================================================
+  DocApiLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: DocApiHandler
+      Runtime: nodejs18.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Handler: index.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DocumentosMetadataTable
+          BUCKET_NAME: !Ref DocStorageBucket
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              headers: { 
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*"
+              },
+              body: JSON.stringify({ message: "API activa y funcional" })
+            };
+          };
+  DocApiLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/DocApiHandler
+      RetentionInDays: 1
+
+  # =========================================================================
+  # 5. API GATEWAY (Público / Integración Directa)
+  # crea un REST API regional, exponiendo asi los endpoints
+  # =========================================================================
+  DocApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: Document Management API
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  # Permiso para que API Gateway invoque a lambda,  de otra manera lambda bloquea invocaciones al servicio
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DocApiLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${DocApiGateway}/*/*/*'
+
+  # crea Recurso /documentos
+  DocsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt DocApiGateway.RootResourceId
+      PathPart: documentos
+      RestApiId: !Ref DocApiGateway
+
+  # crea Recurso /documentos/{folio}
+  FolioResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref DocsResource
+      PathPart: '{folio}'
+      RestApiId: !Ref DocApiGateway
+
+  # Métodos REST CRUD en /documentos, sin authN
+  # AWS_PROXY para q API GW q direcciona los http req a lambda, y lambda controla el res
+  DocsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      ResourceId: !Ref DocsResource
+      RestApiId: !Ref DocApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
+
+  DocsPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref DocsResource
+      RestApiId: !Ref DocApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
+
+  # Métodos CRUD en /documentos/{folio}
+  FolioGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      ResourceId: !Ref FolioResource
+      RestApiId: !Ref DocApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
+
+  FolioPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: PUT
+      ResourceId: !Ref FolioResource
+      RestApiId: !Ref DocApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
+
+  FolioDeleteMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: DELETE
+      ResourceId: !Ref FolioResource
+      RestApiId: !Ref DocApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DocApiLambda.Arn}/invocations'
+
+  # Despliegue de API Gateway
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - DocsGetMethod
+      - DocsPostMethod
+      - FolioGetMethod
+      - FolioPutMethod
+      - FolioDeleteMethod
+    Properties:
+      RestApiId: !Ref DocApiGateway
+      StageName: prod
+
+# =========================================================================
+# 6. OUTPUTS (Resultados del Despliegue)
+# =========================================================================
+Outputs:
+  ApiEndpoint:
+    Description: URL Base de la API para consumir desde Postman o Frontend
+    Value: !Sub 'https://${DocApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/'
+
+  FrontendWebsiteURL:
+    Description: URL del Frontend alojado en S3
+    Value: !GetAtt DocFrontendBucket.WebsiteURL
+
+  StorageBucketName:
+    Description: Nombre del Bucket S3 de almacenamiento de documentos
+    Value: !Ref DocStorageBucket
