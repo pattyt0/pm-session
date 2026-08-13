@@ -1,32 +1,24 @@
 name: Create a S3 bucket
-
 on:
   push:
-    branches:
-      - main # list of branches to trigger the workflow on push
-
+    branches: [ "main" ]
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     permissions:
       id-token: write
       contents: read
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{vars.AWS_ROLE_ARN}}:role/${{vars.AWS_ROLE_NAME}}
+        with:          
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ROLE_ARN }}:role/${{ vars.AWS_ROLE_NAME }}
           aws-region: us-east-1
-
       - name: Deploy CloudFormation stack
         run: |
           aws cloudformation deploy \
-            --template-file s3.yml \
-            --stack-name cloudformation-s3-stack \
+            --template-file s3.yaml \
+            --stack-name pm-s3-stack \
             --no-fail-on-empty-changeset
-
