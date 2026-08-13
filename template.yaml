@@ -39,28 +39,6 @@ Resources:
             Status: Enabled
             ExpirationInDays: 7
 
-  # Bucket para alojamiento Web del Frontend como pagina statica
-  # el hosting de esta pagina estatica requiere aceso public
-  DocFrontendBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
-  # permite s3:GetObject para el arvhico front end  para que pueda leerse html, JS, CSS
-  DocFrontendBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref DocFrontendBucket
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: PublicReadGetObject
-            Effect: Allow
-            Principal: '*'
-            Action: 's3:GetObject'
-            Resource: !Sub 'arn:aws:s3:::${DocFrontendBucket}/*'
-
   # =========================================================================
   # 3. ROLES E IAM (Principio de Mínimo Privilegio para Lambda)
   # crea IAM role (DocLambdaExecutionRole) porque cada f(x) lambda requiere un execution role
@@ -261,10 +239,6 @@ Outputs:
   ApiEndpoint:
     Description: URL Base de la API para consumir desde Postman o Frontend
     Value: !Sub 'https://${DocApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/'
-
-  FrontendWebsiteURL:
-    Description: URL del Frontend alojado en S3
-    Value: !GetAtt DocFrontendBucket.WebsiteURL
 
   StorageBucketName:
     Description: Nombre del Bucket S3 de almacenamiento de documentos
