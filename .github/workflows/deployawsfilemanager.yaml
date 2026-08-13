@@ -23,7 +23,7 @@ jobs:
       - name: Deploy AWS CloudFormation Stack
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: pm-document-management-stack
+          name: pm-document-management-stack-v1
           template: template.yaml
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_IAM
           no-fail-on-empty-changeset: "1"
